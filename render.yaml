@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: dw-line-receipt-bot
+    runtime: docker
+    plan: free
+    envVars:
+      - key: LINE_CHANNEL_SECRET
+        sync: false
+      - key: LINE_CHANNEL_ACCESS_TOKEN
+        sync: false
+      - key: DROPBOX_REFRESH_TOKEN
+        sync: false
+      - key: DROPBOX_APP_KEY
+        sync: false
+      - key: DROPBOX_APP_SECRET
+        sync: false
+      - key: DROPBOX_DEST_FOLDER
+        value: "/D&W (Detale and Works)/社内/証憑写真/_inbox"
