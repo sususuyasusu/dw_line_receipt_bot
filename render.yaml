@@ -15,4 +15,6 @@ services:
       - key: DROPBOX_APP_SECRET
         sync: false
       - key: DROPBOX_DEST_FOLDER
-        value: "/D&W (Detale and Works)/社内/証憑写真/_inbox"
+        value: "/D& W/社内/証憑写真/_inbox"
+      - key: DROPBOX_ROOT_NAMESPACE_ID
+        sync: false

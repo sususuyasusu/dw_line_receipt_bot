@@ -28,8 +28,9 @@ DROPBOX_APP_KEY = os.environ["DROPBOX_APP_KEY"]
 DROPBOX_APP_SECRET = os.environ["DROPBOX_APP_SECRET"]
 DROPBOX_DEST_FOLDER = os.environ.get(
     "DROPBOX_DEST_FOLDER",
-    "/D&W (Detale and Works)/社内/証憑写真/_inbox",
+    "/D& W/社内/証憑写真/_inbox",
 )
+DROPBOX_ROOT_NAMESPACE_ID = os.environ.get("DROPBOX_ROOT_NAMESPACE_ID")
 
 handler = WebhookHandler(CHANNEL_SECRET)
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
@@ -38,11 +39,15 @@ app = FastAPI()
 
 
 def _dbx() -> dropbox.Dropbox:
-    return dropbox.Dropbox(
+    dbx = dropbox.Dropbox(
         app_key=DROPBOX_APP_KEY,
         app_secret=DROPBOX_APP_SECRET,
         oauth2_refresh_token=DROPBOX_REFRESH_TOKEN,
     )
+    if DROPBOX_ROOT_NAMESPACE_ID:
+        from dropbox.common import PathRoot
+        dbx = dbx.with_path_root(PathRoot.root(DROPBOX_ROOT_NAMESPACE_ID))
+    return dbx
 
 
 def image_to_pdf_with_text_layer(image_bytes: bytes) -> bytes:
