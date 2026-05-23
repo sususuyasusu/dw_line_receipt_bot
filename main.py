@@ -86,6 +86,20 @@ def healthz():
     return {"status": "ok"}
 
 
+@app.get("/debug/env")
+def debug_env():
+    return {
+        "secret_head": (CHANNEL_SECRET[:4] + "...") if CHANNEL_SECRET else None,
+        "secret_len": len(CHANNEL_SECRET) if CHANNEL_SECRET else 0,
+        "token_head": (CHANNEL_ACCESS_TOKEN[:8] + "...") if CHANNEL_ACCESS_TOKEN else None,
+        "token_len": len(CHANNEL_ACCESS_TOKEN) if CHANNEL_ACCESS_TOKEN else 0,
+        "dropbox_root_ns": DROPBOX_ROOT_NAMESPACE_ID,
+        "dropbox_dest": DROPBOX_DEST_FOLDER,
+        "expected_secret_head": "62fc",
+        "expected_token_head": "Ytb4BbD8",
+    }
+
+
 @app.post("/webhook")
 async def webhook(request: Request):
     signature = request.headers.get("X-Line-Signature", "")
