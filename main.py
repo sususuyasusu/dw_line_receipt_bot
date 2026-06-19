@@ -2,12 +2,14 @@
 LINE Bot: 受信画像 → 透明テキスト層付き PDF → Dropbox _inbox/ にアップロード
 """
 import datetime
+import io
 import os
 import subprocess
 import tempfile
 from pathlib import Path
 
 import dropbox
+from PIL import Image, ImageOps
 from fastapi import FastAPI, HTTPException, Request
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -50,19 +52,45 @@ def _dbx() -> dropbox.Dropbox:
     return dbx
 
 
+MAX_DIMENSION = 2200  # 長辺の最大ピクセル。Render Free 512MB に収める
+
+
+def _preprocess_image(image_bytes: bytes) -> bytes:
+    """大きい画像でも Render Free tier (512MB) で Tesseract が完走できるよう、
+    EXIF 回転を適用してから RGB JPEG (品質88・長辺<=2200px) に正規化する。"""
+    with Image.open(io.BytesIO(image_bytes)) as im:
+        im = ImageOps.exif_transpose(im)
+        if im.mode not in ("RGB", "L"):
+            im = im.convert("RGB")
+        w, h = im.size
+        long_side = max(w, h)
+        if long_side > MAX_DIMENSION:
+            scale = MAX_DIMENSION / long_side
+            im = im.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=88, optimize=True)
+        return buf.getvalue()
+
+
 def image_to_pdf_with_text_layer(image_bytes: bytes) -> bytes:
+    normalized = _preprocess_image(image_bytes)
     with tempfile.TemporaryDirectory() as tmpdir:
         img_path = Path(tmpdir) / "input.jpg"
-        img_path.write_bytes(image_bytes)
+        img_path.write_bytes(normalized)
         out_base = Path(tmpdir) / "output"
         result = subprocess.run(
             ["tesseract", str(img_path), str(out_base), "-l", "jpn", "pdf"],
             capture_output=True,
             text=True,
+            timeout=120,
         )
         if result.returncode != 0:
-            raise RuntimeError(f"tesseract failed: {result.stderr}")
-        return out_base.with_suffix(".pdf").read_bytes()
+            raise RuntimeError(f"tesseract failed: {result.stderr[:500]}")
+        pdf_bytes = out_base.with_suffix(".pdf").read_bytes()
+        # 健全性検証: 完全な PDF は末尾近くに %%EOF を含む
+        if b"%%EOF" not in pdf_bytes[-1024:]:
+            raise RuntimeError("tesseract produced truncated PDF (no %%EOF marker)")
+        return pdf_bytes
 
 
 def upload_to_dropbox(pdf_bytes: bytes, filename: str) -> str:
