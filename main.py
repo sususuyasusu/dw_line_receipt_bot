@@ -100,6 +100,23 @@ def debug_env():
     }
 
 
+@app.get("/debug/selftest")
+def debug_selftest():
+    """Dropbox接続の自己診断（一時的）。トークン失効/権限を切り分ける。"""
+    result = {"dropbox_account": None, "dropbox_list": None}
+    try:
+        acct = _dbx().users_get_current_account()
+        result["dropbox_account"] = {"ok": True, "email": acct.email}
+    except Exception as e:  # noqa: BLE001
+        result["dropbox_account"] = {"ok": False, "error": type(e).__name__, "detail": str(e)[:300]}
+    try:
+        listing = _dbx().files_list_folder(DROPBOX_DEST_FOLDER)
+        result["dropbox_list"] = {"ok": True, "entries": len(listing.entries)}
+    except Exception as e:  # noqa: BLE001
+        result["dropbox_list"] = {"ok": False, "error": type(e).__name__, "detail": str(e)[:300]}
+    return result
+
+
 @app.post("/webhook")
 async def webhook(request: Request):
     signature = request.headers.get("X-Line-Signature", "")
