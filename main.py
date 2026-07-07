@@ -72,18 +72,32 @@ def _preprocess_image(image_bytes: bytes) -> bytes:
         return buf.getvalue()
 
 
+def _image_to_pdf_pillow(normalized_jpeg: bytes) -> bytes:
+    """Tesseract が無い環境（Mac常駐）用: Pillow で画像のみの PDF を生成。
+    テキスト層は付かないが、検索性は receipt-photo-sidecar の .md が担保する。"""
+    with Image.open(io.BytesIO(normalized_jpeg)) as im:
+        if im.mode != "RGB":
+            im = im.convert("RGB")
+        buf = io.BytesIO()
+        im.save(buf, format="PDF", resolution=150.0)
+        return buf.getvalue()
+
+
 def image_to_pdf_with_text_layer(image_bytes: bytes) -> bytes:
     normalized = _preprocess_image(image_bytes)
     with tempfile.TemporaryDirectory() as tmpdir:
         img_path = Path(tmpdir) / "input.jpg"
         img_path.write_bytes(normalized)
         out_base = Path(tmpdir) / "output"
-        result = subprocess.run(
-            ["tesseract", str(img_path), str(out_base), "-l", "jpn", "pdf"],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        try:
+            result = subprocess.run(
+                ["tesseract", str(img_path), str(out_base), "-l", "jpn", "pdf"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except FileNotFoundError:
+            return _image_to_pdf_pillow(normalized)
         if result.returncode != 0:
             raise RuntimeError(f"tesseract failed: {result.stderr[:500]}")
         pdf_bytes = out_base.with_suffix(".pdf").read_bytes()
