@@ -118,6 +118,34 @@ def upload_to_dropbox(pdf_bytes: bytes, filename: str) -> str:
     return dest
 
 
+# ── LINE Webhook 再送による二重保存を防ぐための「処理済みマーカー」 ──
+# LINE は初回配信が失敗（コールドスタート等）すると同じイベントを再送する。
+# メッセージ ID ごとに空マーカーを残し、既処理なら保存をスキップする。
+# マーカーは _inbox の外（sidecar が触らない _seen/）に置く。
+def _seen_folder() -> str:
+    parent = DROPBOX_DEST_FOLDER.rsplit("/", 1)[0]
+    return f"{parent}/_seen"
+
+
+def already_seen(message_id: str) -> bool:
+    try:
+        _dbx().files_get_metadata(f"{_seen_folder()}/{message_id}")
+        return True
+    except Exception:  # noqa: BLE001  未検出・その他は「未処理」扱い（安全側）
+        return False
+
+
+def mark_seen(message_id: str) -> None:
+    try:
+        _dbx().files_upload(
+            b"",
+            f"{_seen_folder()}/{message_id}",
+            mode=dropbox.files.WriteMode.overwrite,
+        )
+    except Exception:  # noqa: BLE001  マーク失敗は致命的でない
+        pass
+
+
 @app.get("/")
 def root():
     return {"status": "ok", "service": "dw_line_receipt_bot"}
@@ -173,16 +201,28 @@ async def webhook(request: Request):
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image(event: MessageEvent):
     message_id = event.message.id
+    # LINE 再送の重複なら、二重保存・二重返信をせず終了
+    if already_seen(message_id):
+        return
+
     with ApiClient(configuration) as api_client:
         blob_api = MessagingApiBlob(api_client)
         image_bytes = blob_api.get_message_content(message_id=message_id)
 
     pdf_bytes = image_to_pdf_with_text_layer(image_bytes)
 
-    now = datetime.datetime.now()
+    # ファイル名の時刻は LINE 送信時刻を日本時間で（実行環境のTZに依存させない）
+    jst = datetime.timezone(datetime.timedelta(hours=9))
+    ts_ms = getattr(event, "timestamp", None)
+    ts = (
+        datetime.datetime.fromtimestamp(ts_ms / 1000, tz=jst)
+        if ts_ms
+        else datetime.datetime.now(jst)
+    )
     user_suffix = (event.source.user_id or "anon")[:6]
-    filename = f"{now.strftime('%Y%m%d-%H%M%S')}-line-{user_suffix}.pdf"
+    filename = f"{ts.strftime('%Y%m%d-%H%M%S')}-line-{user_suffix}.pdf"
     dest_path = upload_to_dropbox(pdf_bytes, filename)
+    mark_seen(message_id)  # 保存成功→以後の再送はスキップ
 
     with ApiClient(configuration) as api_client:
         MessagingApi(api_client).reply_message(
