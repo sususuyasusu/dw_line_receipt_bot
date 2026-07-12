@@ -39,6 +39,16 @@ configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 
 app = FastAPI()
 
+# 一時診断カウンタ（受信→発火→保存の流れを外から観測する）
+_DIAG = {
+    "webhook_calls": 0,
+    "last_event_types": None,
+    "handler_error": None,
+    "image_handler_calls": 0,
+    "image_saved": 0,
+    "last_saved_file": None,
+}
+
 
 def _dbx() -> dropbox.Dropbox:
     dbx = dropbox.Dropbox(
@@ -187,19 +197,37 @@ def debug_selftest():
     return result
 
 
+@app.get("/debug/counters")
+def debug_counters():
+    return _DIAG
+
+
 @app.post("/webhook")
 async def webhook(request: Request):
     signature = request.headers.get("X-Line-Signature", "")
     body = (await request.body()).decode("utf-8")
+    _DIAG["webhook_calls"] += 1
+    try:
+        import json as _json
+        _DIAG["last_event_types"] = [
+            (e.get("type"), (e.get("message") or {}).get("type"))
+            for e in _json.loads(body).get("events", [])
+        ]
+    except Exception:  # noqa: BLE001
+        pass
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
         raise HTTPException(status_code=400, detail="Invalid signature")
+    except Exception as e:  # noqa: BLE001  診断のため記録して再送出（挙動は不変）
+        _DIAG["handler_error"] = f"{type(e).__name__}: {str(e)[:400]}"
+        raise
     return {"status": "ok"}
 
 
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image(event: MessageEvent):
+    _DIAG["image_handler_calls"] += 1
     message_id = event.message.id
     # LINE 再送の重複なら、二重保存・二重返信をせず終了
     if already_seen(message_id):
@@ -222,6 +250,8 @@ def handle_image(event: MessageEvent):
     user_suffix = (event.source.user_id or "anon")[:6]
     filename = f"{ts.strftime('%Y%m%d-%H%M%S')}-line-{user_suffix}.pdf"
     dest_path = upload_to_dropbox(pdf_bytes, filename)
+    _DIAG["image_saved"] += 1
+    _DIAG["last_saved_file"] = filename
     mark_seen(message_id)  # 保存成功→以後の再送はスキップ
 
     with ApiClient(configuration) as api_client:
