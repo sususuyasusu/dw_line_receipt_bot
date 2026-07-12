@@ -21,7 +21,11 @@ from linebot.v3.messaging import (
     ReplyMessageRequest,
     TextMessage,
 )
-from linebot.v3.webhooks import ImageMessageContent, MessageEvent
+from linebot.v3.webhooks import (
+    FileMessageContent,
+    ImageMessageContent,
+    MessageEvent,
+)
 
 CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
 CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
@@ -225,20 +229,37 @@ async def webhook(request: Request):
     return {"status": "ok"}
 
 
-@handler.add(MessageEvent, message=ImageMessageContent)
-def handle_image(event: MessageEvent):
-    _DIAG["image_handler_calls"] += 1
-    message_id = event.message.id
-    # LINE 再送の重複なら、二重保存・二重返信をせず終了
-    if already_seen(message_id):
-        return
-
+def _fetch_content(message_id: str) -> bytes:
     with ApiClient(configuration) as api_client:
-        blob_api = MessagingApiBlob(api_client)
-        image_bytes = blob_api.get_message_content(message_id=message_id)
+        return MessagingApiBlob(api_client).get_message_content(message_id=message_id)
 
-    pdf_bytes = image_to_pdf_with_text_layer(image_bytes)
 
+def _sips_to_jpeg(data: bytes) -> bytes:
+    """HEIC 等 Pillow が読めない画像を macOS の sips で JPEG 化する。"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Path(tmpdir) / "in.bin"
+        out = Path(tmpdir) / "out.jpg"
+        src.write_bytes(data)
+        result = subprocess.run(
+            ["sips", "-s", "format", "jpeg", str(src), "--out", str(out)],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0 or not out.exists():
+            raise RuntimeError(f"sips failed: {result.stderr[:200]}")
+        return out.read_bytes()
+
+
+def _content_to_pdf(content: bytes) -> bytes:
+    """受信データを PDF に。PDF はそのまま、画像(HEIC含む)は変換する。"""
+    if content[:5] == b"%PDF-":
+        return content
+    try:
+        return image_to_pdf_with_text_layer(content)
+    except Exception:  # noqa: BLE001  Pillow不可(HEIC等)→ sipsでJPEG化して再挑戦
+        return image_to_pdf_with_text_layer(_sips_to_jpeg(content))
+
+
+def _save_pdf_and_reply(event: MessageEvent, message_id: str, pdf_bytes: bytes) -> None:
     # ファイル名の時刻は LINE 送信時刻を日本時間で（実行環境のTZに依存させない）
     jst = datetime.timezone(datetime.timedelta(hours=9))
     ts_ms = getattr(event, "timestamp", None)
@@ -253,13 +274,31 @@ def handle_image(event: MessageEvent):
     _DIAG["image_saved"] += 1
     _DIAG["last_saved_file"] = filename
     mark_seen(message_id)  # 保存成功→以後の再送はスキップ
-
     with ApiClient(configuration) as api_client:
         MessagingApi(api_client).reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[
-                    TextMessage(text=f"保存しました\n{filename}\n→ {dest_path}")
-                ],
+                messages=[TextMessage(text=f"保存しました\n{filename}\n→ {dest_path}")],
             )
         )
+
+
+@handler.add(MessageEvent, message=ImageMessageContent)
+def handle_image(event: MessageEvent):
+    _DIAG["image_handler_calls"] += 1
+    message_id = event.message.id
+    if already_seen(message_id):  # LINE 再送の重複なら二重保存しない
+        return
+    pdf_bytes = image_to_pdf_with_text_layer(_fetch_content(message_id))
+    _save_pdf_and_reply(event, message_id, pdf_bytes)
+
+
+@handler.add(MessageEvent, message=FileMessageContent)
+def handle_file(event: MessageEvent):
+    """写真を『ファイル』として送っても保存できるようにする（PDF/HEIC/JPEG等）。"""
+    _DIAG["image_handler_calls"] += 1
+    message_id = event.message.id
+    if already_seen(message_id):
+        return
+    pdf_bytes = _content_to_pdf(_fetch_content(message_id))
+    _save_pdf_and_reply(event, message_id, pdf_bytes)
