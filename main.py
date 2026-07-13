@@ -10,6 +10,14 @@ from pathlib import Path
 
 import dropbox
 from PIL import Image, ImageOps
+
+# iPhone標準の HEIC を Pillow で開けるようにする（Render/Linux 用。
+# 未インストール環境=Mac ローカルでは従来どおり sips フォールバックが受ける）
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:
+    pass
 from fastapi import FastAPI, HTTPException, Request
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
